@@ -153,10 +153,25 @@ FROM debian:bookworm-slim AS fetch-geoip-db
 WORKDIR /code
 SHELL ["/bin/bash", "-e", "-o", "pipefail", "-c"]
 
-# Create minimal GeoIP database stub for IP geolocation within Django.
-RUN mkdir -p share && \
-    echo "GeoLite2-City stub file" > ./share/GeoLite2-City.mmdb && \
-    chmod 644 ./share/GeoLite2-City.mmdb
+# Download actual GeoLite2-City database or create proper fallback
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt/lists \
+    apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    mkdir -p share && \
+    (curl -s -L "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb" \
+         --connect-timeout 30 --max-time 300 --output ./share/GeoLite2-City.mmdb || \
+     curl -s -L "https://git.io/GeoLite2-City.mmdb" \
+         --connect-timeout 30 --max-time 300 --output ./share/GeoLite2-City.mmdb || \
+     echo "No GeoIP database available" > ./share/GeoLite2-City.mmdb.error) && \
+    if [ -f "./share/GeoLite2-City.mmdb" ] && [ -s "./share/GeoLite2-City.mmdb" ]; then \
+        echo "✅ GeoIP database downloaded successfully"; \
+        file ./share/GeoLite2-City.mmdb; \
+    else \
+        echo "❌ GeoIP download failed, removing stub to disable GeoIP"; \
+        rm -f ./share/GeoLite2-City.mmdb*; \
+    fi && \
+    chmod 644 ./share/GeoLite2-City.mmdb* 2>/dev/null || true
 
 
 #
