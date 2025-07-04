@@ -111,15 +111,14 @@ RUN --mount=type=cache,target=/var/cache/apt \
     --mount=type=cache,target=/var/lib/apt/lists \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-    "build-essential" \
-    "git" \
-    "libpq-dev" \
-    "libxmlsec1" \
-    "libxmlsec1-dev" \
-    "libffi-dev" \
-    "zlib1g-dev" \
-    "pkg-config" && \
-    rm -rf /var/lib/apt/lists/*
+    build-essential \
+    git \
+    libpq-dev \
+    libxmlsec1 \
+    libxmlsec1-dev \
+    libffi-dev \
+    zlib1g-dev \
+    pkg-config
 
 # Install Python dependencies with UV
 RUN --mount=type=cache,target=/root/.cache/pip \
