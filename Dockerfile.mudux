@@ -160,8 +160,9 @@ RUN --mount=type=cache,target=/var/cache/apt \
     "ca-certificates" \
     "curl" \
     "brotli" && \
-    mkdir share && \
-    ( curl -s -L "https://mmdbcdn.posthog.net/" --http1.1 | brotli --decompress --output=./share/GeoLite2-City.mmdb ) && \
+    mkdir -p share && \
+    ( curl -s -L "https://mmdbcdn.posthog.net/" --http1.1 --connect-timeout 30 --max-time 300 | brotli --decompress --output=./share/GeoLite2-City.mmdb || \
+      curl -s -L "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb" --connect-timeout 30 --max-time 300 --output ./share/GeoLite2-City.mmdb ) && \
     chmod -R 755 ./share/GeoLite2-City.mmdb
 
 
