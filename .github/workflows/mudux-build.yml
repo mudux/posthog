@@ -34,8 +34,8 @@ concurrency:
 
 env:
   ECR_PUBLIC_REGISTRY: public.ecr.aws
-  ECR_PUBLIC_REPOSITORY: mudux/posthog
-  REGISTRY_ALIAS: mudux
+  ECR_PUBLIC_REPOSITORY: rupha/mudux/posthog
+  REGISTRY_ALIAS: rupha
 
 jobs:
   check-changes:
@@ -131,13 +131,15 @@ jobs:
         with:
           registry-type: public
 
+      - name: 🏗️ Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: 🐳 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: 🏗️ Build Enhanced PostHog Image
-        uses: depot/build-push-action@v1
+        uses: docker/build-push-action@v5
         with:
-          project: x19jffd9zf
           context: .
           file: ./Dockerfile.mudux
           platforms: linux/amd64,linux/arm64
