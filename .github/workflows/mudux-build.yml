@@ -1,0 +1,246 @@
+name: 🚀 Build and Push Mudux Enhanced PostHog
+
+on:
+  push:
+    branches: 
+      - enhanced-migrations-*
+      - mudux-main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/**'
+      - '!.github/workflows/mudux-build.yml'
+  pull_request:
+    branches:
+      - enhanced-migrations-*
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      version_suffix:
+        description: 'Version suffix (e.g., enhanced-01)'
+        required: false
+        default: 'enhanced-01'
+      push_to_ecr:
+        description: 'Push to ECR Public'
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ECR_PUBLIC_REGISTRY: public.ecr.aws
+  ECR_PUBLIC_REPOSITORY: mudux/posthog
+  REGISTRY_ALIAS: mudux
+
+jobs:
+  check-changes:
+    name: 🔍 Check for Changes
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.changes.outputs.should_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check for relevant changes
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Check if this is a forced build
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/heads/enhanced-migrations-* ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Check for changes in relevant files
+          git diff --name-only HEAD~1 HEAD > changed_files.txt
+          
+          if grep -qE '^(posthog/|Dockerfile\.mudux|\.github/workflows/mudux-build\.yml|manage\.py|pyproject\.toml)' changed_files.txt; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+
+  build-and-push:
+    name: 🏗️ Build and Push Enhanced PostHog
+    runs-on: depot-ubuntu-latest-4
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 🔧 Set up Build Variables
+        id: vars
+        run: |
+          # Generate version based on branch and commit
+          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          COMMIT_SHORT="${{ github.sha }}"
+          COMMIT_SHORT=${COMMIT_SHORT:0:8}
+          
+          # Generate version suffix
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION_SUFFIX="${{ github.event.inputs.version_suffix || 'enhanced-01' }}"
+          else
+            VERSION_SUFFIX="enhanced-$(date +%Y%m%d)-${COMMIT_SHORT}"
+          fi
+          
+          # Create full version tag
+          if [[ "$BRANCH_NAME" == enhanced-migrations-* ]]; then
+            BASE_VERSION=$(echo "$BRANCH_NAME" | sed 's/enhanced-migrations-//')
+            MUDUX_VERSION="mudux-${BASE_VERSION}-${VERSION_SUFFIX}"
+          else
+            MUDUX_VERSION="mudux-v1.43.1-${VERSION_SUFFIX}"
+          fi
+          
+          echo "mudux_version=${MUDUX_VERSION}" >> $GITHUB_OUTPUT
+          echo "commit_hash=${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "should_push=${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.push_to_ecr == 'true') }}" >> $GITHUB_OUTPUT
+          
+          echo "🏷️ Version: ${MUDUX_VERSION}"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "🌿 Branch: ${BRANCH_NAME}"
+
+      - name: 🔑 Configure AWS Credentials
+        if: steps.vars.outputs.should_push == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: 🔐 Login to Amazon ECR Public
+        if: steps.vars.outputs.should_push == 'true'
+        id: login-ecr-public
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      - name: 🐳 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🏗️ Build Enhanced PostHog Image
+        uses: depot/build-push-action@v1
+        with:
+          project: x19jffd9zf
+          context: .
+          file: ./Dockerfile.mudux
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            COMMIT_HASH=${{ steps.vars.outputs.commit_hash }}
+            MUDUX_VERSION=${{ steps.vars.outputs.mudux_version }}
+          tags: |
+            ${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY }}:${{ steps.vars.outputs.mudux_version }}
+            ${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY }}:latest-enhanced
+          push: ${{ steps.vars.outputs.should_push }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 📋 Generate Image Summary
+        if: steps.vars.outputs.should_push == 'true'
+        run: |
+          echo "## 🚀 Enhanced PostHog Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`${{ steps.vars.outputs.mudux_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ steps.vars.outputs.commit_hash }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: \`${{ steps.vars.outputs.branch_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platforms**: \`linux/amd64, linux/arm64\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🐳 Docker Images" >> $GITHUB_STEP_SUMMARY
+          echo "- **Main Tag**: \`${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY }}:${{ steps.vars.outputs.mudux_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Latest Enhanced**: \`${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY }}:latest-enhanced\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✨ Enhancements" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔧 Enhanced ClickHouse migration command with auto-remediation" >> $GITHUB_STEP_SUMMARY
+          echo "- 📊 Comprehensive migration progress tracking and error reporting" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔄 Automatic retry logic with exponential backoff" >> $GITHUB_STEP_SUMMARY
+          echo "- 🛠️ Smart error detection and categorization" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 Clean, minimal image optimized for Kubernetes deployments" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Usage in Kubernetes" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`yaml" >> $GITHUB_STEP_SUMMARY
+          echo "# Standard PostHog deployment" >> $GITHUB_STEP_SUMMARY
+          echo "image: ${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY }}:${{ steps.vars.outputs.mudux_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Enhanced migration job" >> $GITHUB_STEP_SUMMARY
+          echo "image: ${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY }}:${{ steps.vars.outputs.mudux_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "command: [\"python\", \"manage.py\", \"migrate_clickhouse_enhanced\"]" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: 🏷️ Create Git Tag
+        if: steps.vars.outputs.should_push == 'true' && github.event_name == 'push'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git tag -a "${{ steps.vars.outputs.mudux_version }}" -m "Enhanced PostHog release ${{ steps.vars.outputs.mudux_version }}"
+          git push origin "${{ steps.vars.outputs.mudux_version }}" || true
+
+  security-scan:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    needs: [check-changes, build-and-push]
+    if: needs.check-changes.outputs.should_build == 'true'
+    
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔍 Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY }}:latest-enhanced
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: 📋 Upload Trivy Scan Results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+
+  notify:
+    name: 📢 Notify Build Status
+    runs-on: ubuntu-latest
+    needs: [check-changes, build-and-push, security-scan]
+    if: always() && needs.check-changes.outputs.should_build == 'true'
+    
+    steps:
+      - name: 📊 Build Status Summary
+        run: |
+          echo "## 📊 Enhanced PostHog Build Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.build-and-push.result }}" = "success" ]; then
+            echo "✅ **Build and Push**: Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Build and Push**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.security-scan.result }}" = "success" ]; then
+            echo "🔒 **Security Scan**: Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Security Scan**: Check results" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [ECR Repository](https://gallery.ecr.aws/${{ env.ECR_PUBLIC_REPOSITORY }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
