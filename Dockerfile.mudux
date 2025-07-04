@@ -159,7 +159,7 @@ RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates && \
     mkdir -p share && \
-    (curl -s -L "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb" \
+    (curl -s -L "https://github.com/P3TERX/GeoLite.mmdb/releases/download/2025.07.04/GeoLite2-City.mmdb" \
          --connect-timeout 30 --max-time 300 --output ./share/GeoLite2-City.mmdb || \
      curl -s -L "https://git.io/GeoLite2-City.mmdb" \
          --connect-timeout 30 --max-time 300 --output ./share/GeoLite2-City.mmdb || \
