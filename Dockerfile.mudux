@@ -121,13 +121,15 @@ RUN --mount=type=cache,target=/var/cache/apt \
     "pkg-config" && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies with UV cache
+# Install Python dependencies with UV
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/uv \
-    pip install uv~=0.7.0 --no-cache-dir && \
-    python -m pip list && \
+    pip install uv~=0.7.0 --no-cache-dir
+
+# Install Python dependencies with UV in separate step
+RUN --mount=type=cache,target=/root/.cache/uv \
     uv --version && \
-    UV_PROJECT_ENVIRONMENT=/python-runtime UV_CACHE_DIR=/root/.cache/uv uv sync --frozen --no-dev --compile-bytecode --no-binary-package lxml --no-binary-package xmlsec
+    UV_PROJECT_ENVIRONMENT=/python-runtime uv sync --frozen --no-dev --compile-bytecode
 
 ENV PATH=/python-runtime/bin:$PATH \
     PYTHONPATH=/python-runtime
