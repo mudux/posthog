@@ -127,7 +127,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Install Python dependencies with UV in separate step
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv --version && \
-    UV_PROJECT_ENVIRONMENT=/python-runtime uv sync --frozen --no-dev --compile-bytecode
+    UV_PROJECT_ENVIRONMENT=/python-runtime uv sync --frozen --no-dev --compile-bytecode && \
+    echo "Verifying django-linear-migrations installation..." && \
+    /python-runtime/bin/python -c "import django_linear_migrations; print('✅ django-linear-migrations installed successfully')" || \
+    (/python-runtime/bin/pip install django-linear-migrations==2.17.0 && echo "✅ django-linear-migrations installed via fallback")
 
 ENV PATH=/python-runtime/bin:$PATH \
     PYTHONPATH=/python-runtime
