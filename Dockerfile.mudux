@@ -167,27 +167,25 @@ ENV PYTHONUNBUFFERED 1
 
 # Install OS runtime dependencies.
 # Note: please add in this stage runtime dependences only!
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt/lists \
-    apt-get update && \
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    "chromium" \
-    "chromium-driver" \
-    "libpq-dev" \
-    "libxmlsec1" \
-    "libxmlsec1-dev" \
-    "libxml2" \
-    "gettext-base"
+    chromium \
+    chromium-driver \
+    libpq-dev \
+    libxmlsec1 \
+    libxmlsec1-dev \
+    libxml2 \
+    gettext-base && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install MS SQL dependencies and NodeJS 18 with cache mounts
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt/lists \
-    curl https://packages.microsoft.com/keys/microsoft.asc | tee /etc/apt/trusted.gpg.d/microsoft.asc && \
+# Install MS SQL dependencies and NodeJS 18
+RUN curl https://packages.microsoft.com/keys/microsoft.asc | tee /etc/apt/trusted.gpg.d/microsoft.asc && \
     curl https://packages.microsoft.com/config/debian/11/prod.list | tee /etc/apt/sources.list.d/mssql-release.list && \
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
     apt-get update && \
     ACCEPT_EULA=Y apt-get install -y msodbcsql18 && \
-    apt-get install -y --no-install-recommends "nodejs"
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install and use a non-root user.
 RUN groupadd -g 1000 posthog && \
