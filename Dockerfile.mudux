@@ -109,8 +109,6 @@ SHELL ["/bin/bash", "-e", "-o", "pipefail", "-c"]
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/var/cache/apt \
     --mount=type=cache,target=/var/lib/apt/lists \
-    --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=cache,target=/root/.cache/uv \
     apt-get update && \
     apt-get install -y --no-install-recommends \
     "build-essential" \
@@ -121,8 +119,15 @@ RUN --mount=type=cache,target=/var/cache/apt \
     "libffi-dev" \
     "zlib1g-dev" \
     "pkg-config" && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies with UV cache
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/uv \
     pip install uv~=0.7.0 --no-cache-dir && \
-    UV_PROJECT_ENVIRONMENT=/python-runtime uv sync --frozen --no-dev --compile-bytecode --no-binary-package lxml --no-binary-package xmlsec
+    python -m pip list && \
+    uv --version && \
+    UV_PROJECT_ENVIRONMENT=/python-runtime UV_CACHE_DIR=/root/.cache/uv uv sync --frozen --no-dev --compile-bytecode --no-binary-package lxml --no-binary-package xmlsec
 
 ENV PATH=/python-runtime/bin:$PATH \
     PYTHONPATH=/python-runtime
