@@ -154,16 +154,9 @@ export class PersonStoreManagerForBatch implements PersonsStoreForBatch {
                 versionDisparity = true
             }
 
-            // We have both fresh data and existing cache - merge them properly
-            const freshPersonUpdate = fromInternalPerson(mainResult, distinctId)
-            // Preserve the existing property changes
-            freshPersonUpdate.properties_to_set = existingCached.properties_to_set
-            freshPersonUpdate.properties_to_unset = existingCached.properties_to_unset
-            // Preserve the needs_write flag if it was set
-            freshPersonUpdate.needs_write = existingCached.needs_write
-            freshPersonUpdate.is_identified = freshPersonUpdate.is_identified || existingCached.is_identified
-
-            this.secondaryStore.setCachedPersonForUpdate(teamId, distinctId, freshPersonUpdate)
+            // Use fresh data from the database as the source of truth
+            // Don't preserve cached changes as they might be based on stale data
+            this.secondaryStore.setCachedPersonForUpdate(teamId, distinctId, fromInternalPerson(mainResult, distinctId))
         } else if (!mainResult) {
             // Main store returned null, ensure secondary is also null
             this.secondaryStore.setCachedPersonForUpdate(teamId, distinctId, null)
