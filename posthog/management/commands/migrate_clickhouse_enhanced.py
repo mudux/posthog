@@ -234,6 +234,11 @@ class EnhancedMigrationRunner:
                 if not result or not result[0][0]:
                     self.command.stdout.write(f"  📝 Creating database {CLICKHOUSE_DATABASE}")
                     client.execute(f"CREATE DATABASE IF NOT EXISTS {CLICKHOUSE_DATABASE} ON CLUSTER {CLICKHOUSE_MIGRATIONS_CLUSTER}")
+                    # Verify database was created
+                    time.sleep(1)  # Give cluster time to propagate
+                    result = client.execute(f"EXISTS DATABASE {CLICKHOUSE_DATABASE}")
+                    if not result or not result[0][0]:
+                        raise MigrationError(f"Database {CLICKHOUSE_DATABASE} creation failed", "database")
         except Exception as e:
             raise MigrationError(f"Database validation failed: {str(e)}", "database", e)
     
@@ -304,13 +309,16 @@ class EnhancedMigrationRunner:
         modules = import_submodules(MIGRATIONS_PACKAGE_NAME)
         for migration_name in sorted(modules.keys()):
             for operation in modules[migration_name].operations:
-                if hasattr(operation, '_sql') and any(table_name in sql for sql in operation._sql):
-                    try:
-                        self.command.stdout.write(f"    📝 Found table creation in {migration_name}, applying...")
-                        operation.apply(database)
-                        return True
-                    except Exception:
-                        continue
+                if hasattr(operation, '_sql') and operation._sql:
+                    # Check if any SQL statement contains the table name
+                    sql_statements = operation._sql if isinstance(operation._sql, list) else [operation._sql]
+                    if any(table_name in str(sql) for sql in sql_statements):
+                        try:
+                            self.command.stdout.write(f"    📝 Found table creation in {migration_name}, applying...")
+                            operation.apply(database)
+                            return True
+                        except Exception:
+                            continue
         
         return False
     
@@ -443,15 +451,24 @@ class Command(BaseCommand):
         """Comprehensive environment validation"""
         self.stdout.write("  📡 Testing cluster connectivity...")
         
-        # Test each cluster node
-        cluster = get_migrations_cluster()
-        for host in cluster.hosts:
-            try:
+        # Test cluster connectivity
+        try:
+            cluster = get_migrations_cluster()
+            if hasattr(cluster, 'hosts') and cluster.hosts:
+                for host in cluster.hosts:
+                    try:
+                        with default_client() as client:
+                            result = client.execute("SELECT version()")
+                            self.stdout.write(f"    ✅ {host}: ClickHouse {result[0][0]}")
+                    except Exception as e:
+                        self.stdout.write(f"    ❌ {host}: Connection failed - {str(e)}")
+            else:
+                # Test single connection if cluster hosts not available
                 with default_client() as client:
                     result = client.execute("SELECT version()")
-                    self.stdout.write(f"    ✅ {host}: ClickHouse {result[0][0]}")
-            except Exception as e:
-                self.stdout.write(f"    ❌ {host}: Connection failed - {str(e)}")
+                    self.stdout.write(f"    ✅ ClickHouse cluster: {result[0][0]}")
+        except Exception as e:
+            self.stdout.write(f"    ❌ Cluster connectivity test failed: {str(e)}")
         
         # Test database access
         self.stdout.write("  🗄️  Testing database access...")
@@ -492,14 +509,20 @@ class Command(BaseCommand):
                         self.stdout.write(f"    Operation {i}:")
                         sql = getattr(op, "_sql", None)
                         if sql is not None:
-                            self.stdout.write(indent("\n".join(sql), "      "))
+                            try:
+                                if isinstance(sql, list):
+                                    self.stdout.write(indent("\n".join(str(s) for s in sql), "      "))
+                                else:
+                                    self.stdout.write(indent(str(sql), "      "))
+                            except Exception:
+                                self.stdout.write(f"      {type(op).__name__} (SQL content unavailable)")
                         else:
                             self.stdout.write(f"      {type(op).__name__} (non-SQL operation)")
             
             self.stdout.write(f"\n📊 Summary: {len(migrations)} migrations, {total_operations} total operations")
             
             if options["check"]:
-                exit(1)
+                raise CommandError("Unapplied migrations exist")
         else:
             self.stdout.write("✅ ClickHouse migrations are up to date!")
     
