@@ -74,7 +74,7 @@ jobs:
 
   build-and-push:
     name: 🏗️ Build and Push Enhanced PostHog
-    runs-on: depot-ubuntu-latest-4
+    runs-on: depot-ubuntu-latest
     needs: check-changes
     if: needs.check-changes.outputs.should_build == 'true'
     
