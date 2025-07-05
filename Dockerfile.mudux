@@ -119,10 +119,11 @@ RUN apt-get update && \
     pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies with UV
+# Install Python dependencies with UV and ensure pip is available in runtime
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/uv \
-    pip install uv~=0.7.0 --no-cache-dir
+    pip install uv~=0.7.0 --no-cache-dir && \
+    /python-runtime/bin/python -m ensurepip --upgrade || true
 
 # Install Python dependencies with UV in separate step
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -130,7 +131,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     UV_PROJECT_ENVIRONMENT=/python-runtime uv sync --frozen --no-dev --compile-bytecode && \
     echo "Verifying django-linear-migrations installation..." && \
     /python-runtime/bin/python -c "import django_linear_migrations; print('✅ django-linear-migrations installed successfully')" || \
-    (UV_PROJECT_ENVIRONMENT=/python-runtime uv add django-linear-migrations==2.16.0 --frozen && echo "✅ django-linear-migrations installed via UV fallback")
+    (echo "Installing django-linear-migrations via UV fallback..." && \
+     UV_PROJECT_ENVIRONMENT=/python-runtime uv add django-linear-migrations==2.16.0 && \
+     echo "✅ django-linear-migrations installed via UV fallback") || \
+    (echo "UV fallback failed, trying pip..." && \
+     /python-runtime/bin/python -m pip install django-linear-migrations==2.16.0 && \
+     echo "✅ django-linear-migrations installed via pip fallback")
 
 ENV PATH=/python-runtime/bin:$PATH \
     PYTHONPATH=/python-runtime
