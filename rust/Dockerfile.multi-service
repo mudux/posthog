@@ -77,19 +77,7 @@ COPY --from=builder /app/cyclotron-core/migrations /app/cyclotron-core/migration
 COPY --from=builder /app/bin/migrate-cyclotron /usr/local/bin/
 COPY --from=builder /app/bin/migrate /usr/local/bin/
 
-# Create a non-root user
-RUN groupadd -r posthog && useradd -r -g posthog posthog
-
-# Copy the built binary
-COPY --from=builder /app/target/release/$BIN /usr/local/bin/
-
-# Make sure posthog user can access everything
-RUN chown -R posthog:posthog /app && \
-    chmod +x /usr/local/bin/migrate-cyclotron /usr/local/bin/migrate /usr/local/bin/psql /usr/local/bin/sqlx
-
-USER posthog
-
-# Create entrypoint script for better service handling with migration support
+# Create entrypoint script for better service handling with migration support (as root)
 RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \
     echo 'echo "Starting PostHog Rust service: $BIN"' >> /usr/local/bin/entrypoint.sh && \
     echo 'echo "Service type: ${SERVICE_TYPE:-$BIN}"' >> /usr/local/bin/entrypoint.sh && \
@@ -119,6 +107,18 @@ RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \
     echo 'echo "Starting $BIN service..."' >> /usr/local/bin/entrypoint.sh && \
     echo 'exec /usr/local/bin/$BIN "$@"' >> /usr/local/bin/entrypoint.sh && \
     chmod +x /usr/local/bin/entrypoint.sh
+
+# Create a non-root user
+RUN groupadd -r posthog && useradd -r -g posthog posthog
+
+# Copy the built binary
+COPY --from=builder /app/target/release/$BIN /usr/local/bin/
+
+# Make sure posthog user can access everything
+RUN chown -R posthog:posthog /app && \
+    chmod +x /usr/local/bin/migrate-cyclotron /usr/local/bin/migrate /usr/local/bin/psql /usr/local/bin/sqlx
+
+USER posthog
 
 # Health check configuration (can be overridden per service)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
