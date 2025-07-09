@@ -114,9 +114,10 @@ jobs:
             echo "matrix={\"service\":[]}" >> $GITHUB_OUTPUT
           else
             echo "should_build=true" >> $GITHUB_OUTPUT
-            # Create JSON array properly
-            MATRIX_JSON=$(printf '%s\n' "${MATRIX_SERVICES[@]}" | jq -R . | jq -s .)
-            echo "matrix={\"service\":$MATRIX_JSON}" >> $GITHUB_OUTPUT
+            # Create JSON array with proper formatting
+            printf -v services_json '"%s",' "${MATRIX_SERVICES[@]}"
+            services_json="[${services_json%,}]"
+            echo "matrix={\"service\":$services_json}" >> $GITHUB_OUTPUT
           fi
           
           echo "Services to build: ${MATRIX_SERVICES[*]}"
@@ -342,10 +343,17 @@ jobs:
           VERSION="${{ needs.prepare-build-matrix.outputs.build_version }}"
           
           # List all services that should have been built
-          SERVICES=($(echo '${{ needs.prepare-build-matrix.outputs.matrix }}' | jq -r '.service[]'))
-          for service in "${SERVICES[@]}"; do
-            echo "- **${service}**: \`${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY_BASE }}/${service}:${VERSION}\`" >> $GITHUB_STEP_SUMMARY
-          done
+          if [ "${{ needs.prepare-build-matrix.outputs.should_build }}" = "true" ]; then
+            MATRIX_JSON='${{ needs.prepare-build-matrix.outputs.matrix }}'
+            if [ "$MATRIX_JSON" != "" ] && [ "$MATRIX_JSON" != "null" ]; then
+              SERVICES=($(echo "$MATRIX_JSON" | jq -r '.service[]' 2>/dev/null || echo ""))
+              for service in "${SERVICES[@]}"; do
+                if [ "$service" != "" ]; then
+                  echo "- **${service}**: \`${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY_BASE }}/${service}:${VERSION}\`" >> $GITHUB_STEP_SUMMARY
+                fi
+              done
+            fi
+          fi
           
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
