@@ -103,7 +103,7 @@ jobs:
             # Trim whitespace
             service=$(echo "$service" | xargs)
             if [[ " ${ALL_SERVICES[@]} " =~ " ${service} " ]]; then
-              MATRIX_SERVICES+=("\"$service\"")
+              MATRIX_SERVICES+=("$service")
             else
               echo "Warning: Unknown service '$service' - skipping"
             fi
@@ -114,6 +114,7 @@ jobs:
             echo "matrix={\"service\":[]}" >> $GITHUB_OUTPUT
           else
             echo "should_build=true" >> $GITHUB_OUTPUT
+            # Create JSON array properly
             MATRIX_JSON=$(printf '%s\n' "${MATRIX_SERVICES[@]}" | jq -R . | jq -s .)
             echo "matrix={\"service\":$MATRIX_JSON}" >> $GITHUB_OUTPUT
           fi
