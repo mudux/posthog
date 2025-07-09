@@ -155,9 +155,9 @@ jobs:
               ;;
           esac
           
-          # Create image tag
-          IMAGE_TAG="${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY_BASE }}/${SERVICE}:${VERSION}"
-          IMAGE_TAG_LATEST="${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY_BASE }}/${SERVICE}:latest"
+          # Create image tag with flat naming structure
+          IMAGE_TAG="${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.REGISTRY_ALIAS }}/posthog-rust-${SERVICE}:${VERSION}"
+          IMAGE_TAG_LATEST="${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.REGISTRY_ALIAS }}/posthog-rust-${SERVICE}:latest"
           
           echo "service=${SERVICE}" >> $GITHUB_OUTPUT
           echo "bin=${BIN}" >> $GITHUB_OUTPUT
@@ -283,7 +283,7 @@ jobs:
         run: |
           SERVICE="${{ matrix.service }}"
           VERSION="${{ needs.prepare-build-matrix.outputs.build_version }}"
-          IMAGE_TAG="${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY_BASE }}/${SERVICE}:${VERSION}"
+          IMAGE_TAG="${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.REGISTRY_ALIAS }}/posthog-rust-${SERVICE}:${VERSION}"
           echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
 
       - name: 🔍 Run Trivy Vulnerability Scanner
@@ -349,7 +349,7 @@ jobs:
               SERVICES=($(echo "$MATRIX_JSON" | jq -r '.service[]' 2>/dev/null || echo ""))
               for service in "${SERVICES[@]}"; do
                 if [ "$service" != "" ]; then
-                  echo "- **${service}**: \`${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY_BASE }}/${service}:${VERSION}\`" >> $GITHUB_STEP_SUMMARY
+                  echo "- **${service}**: \`${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.REGISTRY_ALIAS }}/posthog-rust-${service}:${VERSION}\`" >> $GITHUB_STEP_SUMMARY
                 fi
               done
             fi
