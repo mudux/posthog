@@ -1,0 +1,353 @@
+name: 🦀 Build and Push PostHog Rust Services
+
+on:
+  push:
+    branches: 
+      - main
+      - rust-services-*
+    paths:
+      - 'rust/**'
+      - 'Dockerfile.multi-service'
+      - '.github/workflows/rust-services-build.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'rust/**'
+      - 'Dockerfile.multi-service'
+  workflow_dispatch:
+    inputs:
+      services_to_build:
+        description: 'Services to build (comma-separated: capture,replay-capture,property-defs-rs,cyclotron-janitor,all)'
+        required: false
+        default: 'all'
+        type: string
+      version_suffix:
+        description: 'Version suffix (e.g., v1.0.0-beta1)'
+        required: false
+        default: 'latest'
+        type: string
+      push_to_ecr:
+        description: 'Push to ECR Public'
+        required: false
+        type: boolean
+        default: true
+      build_parallel:
+        description: 'Build all services in parallel (faster but more resource intensive)'
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ECR_PUBLIC_REGISTRY: public.ecr.aws
+  ECR_PUBLIC_REPOSITORY_BASE: rupha/posthog-rust
+  REGISTRY_ALIAS: rupha
+
+jobs:
+  prepare-build-matrix:
+    name: 📋 Prepare Build Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.setup-matrix.outputs.matrix }}
+      should_build: ${{ steps.setup-matrix.outputs.should_build }}
+      build_version: ${{ steps.setup-matrix.outputs.build_version }}
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: 🔧 Setup Build Matrix
+        id: setup-matrix
+        run: |
+          # Define all available services
+          ALL_SERVICES=("capture" "replay-capture" "property-defs-rs" "cyclotron-janitor")
+          
+          # Determine which services to build
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            INPUT_SERVICES="${{ github.event.inputs.services_to_build || 'all' }}"
+            BUILD_PARALLEL="${{ github.event.inputs.build_parallel || 'true' }}"
+          else
+            INPUT_SERVICES="all"
+            BUILD_PARALLEL="true"
+          fi
+          
+          echo "Input services: $INPUT_SERVICES"
+          
+          # Parse services to build
+          if [ "$INPUT_SERVICES" = "all" ]; then
+            SERVICES_TO_BUILD=("${ALL_SERVICES[@]}")
+          else
+            IFS=',' read -ra SERVICES_TO_BUILD <<< "$INPUT_SERVICES"
+          fi
+          
+          # Generate version
+          COMMIT_SHORT="${{ github.sha }}"
+          COMMIT_SHORT=${COMMIT_SHORT:0:8}
+          
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version_suffix || 'latest' }}"
+          else
+            VERSION="$(date +%Y%m%d)-${COMMIT_SHORT}"
+          fi
+          
+          echo "build_version=${VERSION}" >> $GITHUB_OUTPUT
+          
+          # Create matrix
+          MATRIX_SERVICES=()
+          for service in "${SERVICES_TO_BUILD[@]}"; do
+            # Trim whitespace
+            service=$(echo "$service" | xargs)
+            if [[ " ${ALL_SERVICES[@]} " =~ " ${service} " ]]; then
+              MATRIX_SERVICES+=("\"$service\"")
+            else
+              echo "Warning: Unknown service '$service' - skipping"
+            fi
+          done
+          
+          if [ ${#MATRIX_SERVICES[@]} -eq 0 ]; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "matrix={\"service\":[]}" >> $GITHUB_OUTPUT
+          else
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            MATRIX_JSON=$(printf '%s\n' "${MATRIX_SERVICES[@]}" | jq -R . | jq -s .)
+            echo "matrix={\"service\":$MATRIX_JSON}" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "Services to build: ${MATRIX_SERVICES[*]}"
+          echo "Build version: $VERSION"
+          echo "Build parallel: $BUILD_PARALLEL"
+
+  build-rust-services:
+    name: 🏗️ Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: prepare-build-matrix
+    if: needs.prepare-build-matrix.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-build-matrix.outputs.matrix) }}
+    
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 🔧 Set up Build Variables
+        id: vars
+        run: |
+          SERVICE="${{ matrix.service }}"
+          VERSION="${{ needs.prepare-build-matrix.outputs.build_version }}"
+          
+          # Determine binary name for build arg
+          case "$SERVICE" in
+            "replay-capture")
+              BIN="capture"  # replay-capture uses same binary as capture
+              ;;
+            *)
+              BIN="$SERVICE"
+              ;;
+          esac
+          
+          # Create image tag
+          IMAGE_TAG="${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY_BASE }}/${SERVICE}:${VERSION}"
+          IMAGE_TAG_LATEST="${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY_BASE }}/${SERVICE}:latest"
+          
+          echo "service=${SERVICE}" >> $GITHUB_OUTPUT
+          echo "bin=${BIN}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "image_tag_latest=${IMAGE_TAG_LATEST}" >> $GITHUB_OUTPUT
+          echo "should_push=${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.push_to_ecr == 'true') }}" >> $GITHUB_OUTPUT
+          
+          echo "🏷️ Service: ${SERVICE}"
+          echo "🔧 Binary: ${BIN}"
+          echo "📝 Version: ${VERSION}"
+          echo "🐳 Image: ${IMAGE_TAG}"
+
+      - name: 🔑 Configure AWS Credentials
+        if: steps.vars.outputs.should_push == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: 🔐 Login to Amazon ECR Public
+        if: steps.vars.outputs.should_push == 'true'
+        id: login-ecr-public
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      - name: 🏗️ Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: 🧹 Free Up Disk Space
+        run: |
+          echo "🔍 Checking disk space before cleanup..."
+          df -h
+          
+          echo "🧹 Cleaning up to free disk space..."
+          sudo apt-get autoremove -y >/dev/null 2>&1
+          sudo apt-get autoclean -y >/dev/null 2>&1
+          
+          # Remove large directories
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/az || true
+          sudo rm -rf /usr/share/swift || true
+          
+          # Docker cleanup
+          docker system prune -af --volumes || true
+          docker builder prune -af || true
+          
+          echo "✅ Disk space after cleanup:"
+          df -h
+
+      - name: 🐳 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            network=host
+            image=moby/buildkit:v0.14.1
+
+      - name: 🏗️ Build ${{ matrix.service }} Service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./rust
+          file: ./rust/Dockerfile.multi-service
+          platforms: linux/amd64
+          build-args: |
+            BIN=${{ steps.vars.outputs.bin }}
+            COMMIT_HASH=${{ github.sha }}
+            SERVICE_VERSION=${{ steps.vars.outputs.version }}
+          tags: |
+            ${{ steps.vars.outputs.image_tag }}
+            ${{ steps.vars.outputs.image_tag_latest }}
+          push: ${{ steps.vars.outputs.should_push }}
+          cache-from: |
+            type=gha,scope=rust-${{ matrix.service }}
+            type=gha,scope=rust-base
+          cache-to: |
+            type=gha,mode=max,scope=rust-${{ matrix.service }}
+          outputs: type=registry,compression=gzip,compression-level=9
+
+      - name: 📋 Generate Service Build Summary
+        if: steps.vars.outputs.should_push == 'true'
+        run: |
+          echo "## 🦀 ${{ matrix.service }} Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service**: \`${{ steps.vars.outputs.service }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Binary**: \`${{ steps.vars.outputs.bin }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`${{ steps.vars.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platform**: \`linux/amd64\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🐳 Docker Images" >> $GITHUB_STEP_SUMMARY
+          echo "- **Versioned**: \`${{ steps.vars.outputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Latest**: \`${{ steps.vars.outputs.image_tag_latest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Usage in Kubernetes" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`yaml" >> $GITHUB_STEP_SUMMARY
+          echo "# ${{ matrix.service }} deployment" >> $GITHUB_STEP_SUMMARY
+          echo "image: ${{ steps.vars.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "env:" >> $GITHUB_STEP_SUMMARY
+          echo "- name: SERVICE_TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "  value: \"${{ steps.vars.outputs.service }}\"" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  security-scan:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    needs: [prepare-build-matrix, build-rust-services]
+    if: needs.prepare-build-matrix.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-build-matrix.outputs.matrix) }}
+    
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔧 Set Image Tag
+        id: image
+        run: |
+          SERVICE="${{ matrix.service }}"
+          VERSION="${{ needs.prepare-build-matrix.outputs.build_version }}"
+          IMAGE_TAG="${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY_BASE }}/${SERVICE}:${VERSION}"
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+      - name: 🔍 Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.image.outputs.image_tag }}
+          format: 'sarif'
+          output: 'trivy-results-${{ matrix.service }}.sarif'
+        continue-on-error: true
+
+      - name: 📋 Upload Trivy Scan Results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results-${{ matrix.service }}.sarif'
+          category: 'rust-${{ matrix.service }}'
+        continue-on-error: true
+
+  create-release-summary:
+    name: 📢 Create Release Summary
+    runs-on: ubuntu-latest
+    needs: [prepare-build-matrix, build-rust-services, security-scan]
+    if: always() && needs.prepare-build-matrix.outputs.should_build == 'true'
+    
+    steps:
+      - name: 🏷️ Create Git Tags
+        if: needs.build-rust-services.result == 'success' && github.event_name == 'push'
+        run: |
+          VERSION="${{ needs.prepare-build-matrix.outputs.build_version }}"
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Create a tag for the overall rust services release
+          git tag -a "rust-services-${VERSION}" -m "PostHog Rust Services release ${VERSION}"
+          git push origin "rust-services-${VERSION}" || true
+
+      - name: 📊 Final Build Status Summary
+        run: |
+          echo "## 🦀 PostHog Rust Services Build Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Build Results" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.build-rust-services.result }}" = "success" ]; then
+            echo "✅ **Service Builds**: All services built successfully" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Service Builds**: Some builds failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.security-scan.result }}" = "success" ]; then
+            echo "🔒 **Security Scans**: All scans completed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Security Scans**: Check scan results" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🐳 Built Images" >> $GITHUB_STEP_SUMMARY
+          VERSION="${{ needs.prepare-build-matrix.outputs.build_version }}"
+          
+          # List all services that should have been built
+          SERVICES=($(echo '${{ needs.prepare-build-matrix.outputs.matrix }}' | jq -r '.service[]'))
+          for service in "${SERVICES[@]}"; do
+            echo "- **${service}**: \`${{ env.ECR_PUBLIC_REGISTRY }}/${{ env.ECR_PUBLIC_REPOSITORY_BASE }}/${service}:${VERSION}\`" >> $GITHUB_STEP_SUMMARY
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [ECR Gallery](https://gallery.ecr.aws/${{ env.ECR_PUBLIC_REPOSITORY_BASE }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [Rust Documentation](../rust_images.md)" >> $GITHUB_STEP_SUMMARY

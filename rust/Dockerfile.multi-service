@@ -1,0 +1,135 @@
+# Multi-Service Rust Dockerfile for PostHog
+# Supports: capture, replay-capture, property-defs-rs, cyclotron-janitor
+# Based on: https://depot.dev/docs/container-builds/how-to-guides/optimal-dockerfiles/rust-dockerfile
+
+FROM rust:1.85 AS base
+RUN cargo install --locked cargo-chef sccache
+ENV RUSTC_WRAPPER=sccache SCCACHE_DIR=/sccache
+
+FROM base AS planner
+WORKDIR /app
+ARG BIN
+
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json --bin $BIN
+
+FROM base AS builder
+WORKDIR /app
+ARG BIN
+
+# Ensure working C compile setup (not installed by default in arm64 images)
+# Also install postgresql-client for database operations
+RUN apt-get update && apt-get install build-essential libssl-dev cmake postgresql-client -y
+
+# Install sqlx-cli for database operations
+RUN cargo install sqlx-cli --no-default-features --features postgres
+
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo chef cook --release --recipe-path recipe.json --bin $BIN
+
+COPY . .
+RUN --mount=type=secret,id=SCCACHE_WEBDAV_ENDPOINT,required=false \
+    --mount=type=secret,id=SCCACHE_WEBDAV_TOKEN,required=false \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    if [ -f "/run/secrets/SCCACHE_WEBDAV_ENDPOINT" ] && [ -f "/run/secrets/SCCACHE_WEBDAV_TOKEN" ]; then \
+    SCCACHE_WEBDAV_ENDPOINT=$(cat /run/secrets/SCCACHE_WEBDAV_ENDPOINT) \
+    SCCACHE_WEBDAV_TOKEN=$(cat /run/secrets/SCCACHE_WEBDAV_TOKEN) \
+    cargo build --release --bin $BIN; \
+    else \
+    cargo build --release --bin $BIN; \
+    fi
+
+FROM debian:bookworm-slim AS runtime
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    libssl-dev \
+    ca-certificates \
+    curl \
+    brotli \
+    && \
+    rm -rf /var/lib/apt/lists/*
+
+# Download GeoLite2 database (needed for feature-flags and capture services)
+RUN mkdir -p /app/share && \
+    ( curl -s -L "https://mmdbcdn.posthog.net/" --http1.1 | brotli --decompress --output=/app/share/GeoLite2-City.mmdb ) || \
+    ( curl -s -L "https://github.com/P3TERX/GeoLite.mmdb/releases/download/2025.07.04/GeoLite2-City.mmdb" \
+         --connect-timeout 30 --max-time 300 --output /app/share/GeoLite2-City.mmdb ) || \
+    echo "GeoIP database download failed - services will run without GeoIP support" && \
+    chmod -R 755 /app/share/GeoLite2-City.mmdb 2>/dev/null || true
+
+ARG BIN
+ENV BIN=$BIN
+WORKDIR /app
+
+# Copy sqlx-cli and postgresql-client for database operations
+COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/
+COPY --from=builder /usr/bin/psql /usr/local/bin/
+
+# Copy migration files and scripts
+COPY --from=builder /app/cyclotron-core/migrations /app/cyclotron-core/migrations
+COPY --from=builder /app/bin/migrate-cyclotron /usr/local/bin/
+COPY --from=builder /app/bin/migrate /usr/local/bin/
+
+# Create a non-root user
+RUN groupadd -r posthog && useradd -r -g posthog posthog
+
+# Copy the built binary
+COPY --from=builder /app/target/release/$BIN /usr/local/bin/
+
+# Make sure posthog user can access everything
+RUN chown -R posthog:posthog /app && \
+    chmod +x /usr/local/bin/migrate-cyclotron /usr/local/bin/migrate /usr/local/bin/psql /usr/local/bin/sqlx
+
+USER posthog
+
+# Create entrypoint script for better service handling with migration support
+RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \
+    echo 'echo "Starting PostHog Rust service: $BIN"' >> /usr/local/bin/entrypoint.sh && \
+    echo 'echo "Service type: ${SERVICE_TYPE:-$BIN}"' >> /usr/local/bin/entrypoint.sh && \
+    echo 'echo "Environment: ${DEPLOYMENT:-development}"' >> /usr/local/bin/entrypoint.sh && \
+    echo '' >> /usr/local/bin/entrypoint.sh && \
+    echo '# Run migrations if needed' >> /usr/local/bin/entrypoint.sh && \
+    echo 'if [ "$RUN_MIGRATIONS" = "true" ]; then' >> /usr/local/bin/entrypoint.sh && \
+    echo '  echo "Running migrations..."' >> /usr/local/bin/entrypoint.sh && \
+    echo '  case "$BIN" in' >> /usr/local/bin/entrypoint.sh && \
+    echo '    "cyclotron-janitor")' >> /usr/local/bin/entrypoint.sh && \
+    echo '      echo "Running cyclotron migrations..."' >> /usr/local/bin/entrypoint.sh && \
+    echo '      /usr/local/bin/migrate-cyclotron || echo "Cyclotron migration failed, continuing..."' >> /usr/local/bin/entrypoint.sh && \
+    echo '      ;;' >> /usr/local/bin/entrypoint.sh && \
+    echo '    "property-defs-rs")' >> /usr/local/bin/entrypoint.sh && \
+    echo '      echo "Running property-defs migrations..."' >> /usr/local/bin/entrypoint.sh && \
+    echo '      if [ -n "$DATABASE_URL" ]; then' >> /usr/local/bin/entrypoint.sh && \
+    echo '        sqlx database create || echo "Database already exists"' >> /usr/local/bin/entrypoint.sh && \
+    echo '      fi' >> /usr/local/bin/entrypoint.sh && \
+    echo '      ;;' >> /usr/local/bin/entrypoint.sh && \
+    echo '    *)' >> /usr/local/bin/entrypoint.sh && \
+    echo '      echo "No specific migrations for $BIN"' >> /usr/local/bin/entrypoint.sh && \
+    echo '      ;;' >> /usr/local/bin/entrypoint.sh && \
+    echo '  esac' >> /usr/local/bin/entrypoint.sh && \
+    echo 'fi' >> /usr/local/bin/entrypoint.sh && \
+    echo '' >> /usr/local/bin/entrypoint.sh && \
+    echo '# Start the service' >> /usr/local/bin/entrypoint.sh && \
+    echo 'echo "Starting $BIN service..."' >> /usr/local/bin/entrypoint.sh && \
+    echo 'exec /usr/local/bin/$BIN "$@"' >> /usr/local/bin/entrypoint.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh
+
+# Health check configuration (can be overridden per service)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${HEALTH_PORT:-3000}/health || exit 1
+
+# Expose common ports (services bind to specific ports via environment)
+EXPOSE 3000 3001 8000 8001
+
+# Default environment variables
+ENV RUST_LOG=info
+ENV DEPLOYMENT=docker
+
+# Use the entrypoint script
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

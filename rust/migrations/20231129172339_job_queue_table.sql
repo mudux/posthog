@@ -1,11 +1,11 @@
-CREATE TYPE job_status AS ENUM(
+CREATE TYPE IF NOT EXISTS job_status AS ENUM(
     'available',
     'completed',
     'failed',
     'running'
 );
 
-CREATE TABLE job_queue(
+CREATE TABLE IF NOT EXISTS job_queue(
     id BIGSERIAL PRIMARY KEY,
     attempt INT NOT NULL DEFAULT 0,
     attempted_at TIMESTAMPTZ DEFAULT NULL,
@@ -21,6 +21,9 @@ CREATE TABLE job_queue(
     status job_status NOT NULL DEFAULT 'available' :: job_status,
     target TEXT NOT NULL
 );
+
+-- Drop the old idx_queue_scheduled_at and idx_queue_target indexes if they exists
+
 
 -- Needed for `dequeue` queries
 CREATE INDEX idx_queue_scheduled_at ON job_queue(queue, status, scheduled_at, attempt);

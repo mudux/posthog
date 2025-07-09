@@ -1,0 +1,275 @@
+#
+# Docker Compose file for PostHog Rust Services
+# Demonstrates single Docker image approach for all 4 Rust services
+#
+# Services: capture, replay-capture, property-defs-rs, cyclotron-janitor
+# 
+# Usage:
+#   docker-compose -f docker-compose.rust-services.yml up
+#   docker-compose -f docker-compose.rust-services.yml up capture
+#   docker-compose -f docker-compose.rust-services.yml build --build-arg BIN=capture
+#
+
+version: '3.8'
+
+services:
+  #
+  # Capture Service - Event capture
+  #
+  capture:
+    build:
+      context: rust/
+      dockerfile: Dockerfile.multi-service
+      args:
+        BIN: capture
+      cache_from:
+        - ghcr.io/posthog/posthog/rust-base:latest
+    image: ghcr.io/posthog/posthog/rust-services:capture
+    restart: on-failure
+    ports:
+      - "3000:3000"
+    environment:
+      SERVICE_TYPE: capture
+      BIN: capture
+      DEPLOYMENT: docker
+      
+      # Service Configuration
+      ADDRESS: '0.0.0.0:3000'
+      HEALTH_PORT: '3000'
+      CAPTURE_MODE: events
+      
+      # Kafka Configuration
+      KAFKA_TOPIC: 'events_plugin_ingestion'
+      KAFKA_HOSTS: 'kafka:9092'
+      
+      # Redis Configuration
+      REDIS_URL: 'redis://redis:6379/'
+      
+      # Logging
+      RUST_LOG: 'info,rdkafka=warn'
+      
+    depends_on:
+      - kafka
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  #
+  # Replay Capture Service - Session replay capture
+  #
+  replay-capture:
+    build:
+      context: rust/
+      dockerfile: Dockerfile.multi-service
+      args:
+        BIN: capture
+      cache_from:
+        - ghcr.io/posthog/posthog/rust-base:latest
+    image: ghcr.io/posthog/posthog/rust-services:replay-capture
+    restart: on-failure
+    ports:
+      - "3001:3000"
+    environment:
+      SERVICE_TYPE: replay-capture
+      BIN: capture
+      DEPLOYMENT: docker
+      
+      # Service Configuration
+      ADDRESS: '0.0.0.0:3000'
+      HEALTH_PORT: '3000'
+      CAPTURE_MODE: recordings
+      
+      # Kafka Configuration
+      KAFKA_TOPIC: 'session_recording_snapshot_item_events'
+      KAFKA_HOSTS: 'kafka:9092'
+      
+      # Redis Configuration
+      REDIS_URL: 'redis://redis:6379/'
+      
+      # Logging
+      RUST_LOG: 'info,rdkafka=warn'
+      
+    depends_on:
+      - kafka
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  #
+  # Property Definitions Service - Property definitions management
+  #
+  property-defs-rs:
+    build:
+      context: rust/
+      dockerfile: Dockerfile.multi-service
+      args:
+        BIN: property-defs-rs
+      cache_from:
+        - ghcr.io/posthog/posthog/rust-base:latest
+    image: ghcr.io/posthog/posthog/rust-services:property-defs-rs
+    restart: on-failure
+    ports:
+      - "3002:3000"
+    environment:
+      SERVICE_TYPE: property-defs-rs
+      BIN: property-defs-rs
+      DEPLOYMENT: docker
+      
+      # Service Configuration
+      ADDRESS: '0.0.0.0:3000'
+      HEALTH_PORT: '3000'
+      
+      # Database Configuration
+      DATABASE_URL: 'postgres://posthog:posthog@db:5432/posthog'
+      
+      # Migration Configuration
+      RUN_MIGRATIONS: 'true'
+      
+      # Kafka Configuration
+      KAFKA_HOSTS: 'kafka:9092'
+      
+      # Service Behavior
+      SKIP_WRITES: 'false'
+      SKIP_READS: 'false'
+      FILTER_MODE: 'opt-out'
+      
+      # Logging
+      RUST_LOG: 'info,rdkafka=warn'
+      
+    depends_on:
+      - db
+      - kafka
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  #
+  # Cyclotron Janitor Service - Job queue cleanup
+  #
+  cyclotron-janitor:
+    build:
+      context: rust/
+      dockerfile: Dockerfile.multi-service
+      args:
+        BIN: cyclotron-janitor
+      cache_from:
+        - ghcr.io/posthog/posthog/rust-base:latest
+    image: ghcr.io/posthog/posthog/rust-services:cyclotron-janitor
+    restart: on-failure
+    ports:
+      - "3003:3000"
+    environment:
+      SERVICE_TYPE: cyclotron-janitor
+      BIN: cyclotron-janitor
+      DEPLOYMENT: docker
+      
+      # Service Configuration
+      ADDRESS: '0.0.0.0:3000'
+      HEALTH_PORT: '3000'
+      
+      # Database Configuration (Cyclotron uses separate database)
+      DATABASE_URL: 'postgres://posthog:posthog@db:5432/cyclotron'
+      CYCLOTRON_DATABASE_URL: 'postgres://posthog:posthog@db:5432/cyclotron'
+      CYCLOTRON_DATABASE_NAME: 'cyclotron'
+      
+      # Migration Configuration
+      RUN_MIGRATIONS: 'true'
+      
+      # Kafka Configuration
+      KAFKA_HOSTS: 'kafka:9092'
+      KAFKA_TOPIC: 'clickhouse_app_metrics2'
+      
+      # Logging
+      RUST_LOG: 'info,rdkafka=warn'
+      
+    depends_on:
+      - db
+      - kafka
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  #
+  # Supporting Services (for testing)
+  #
+  
+  # PostgreSQL Database
+  db:
+    image: postgres:12-alpine
+    restart: on-failure
+    environment:
+      POSTGRES_USER: posthog
+      POSTGRES_DB: posthog
+      POSTGRES_PASSWORD: posthog
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U posthog']
+      interval: 5s
+      timeout: 5s
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Create cyclotron database
+      - ./docker/postgres-init-scripts:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+
+  # Redis Cache
+  redis:
+    image: redis:6.2.7-alpine
+    restart: on-failure
+    command: redis-server --maxmemory-policy allkeys-lru --maxmemory 200mb
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    ports:
+      - "6379:6379"
+
+  # Kafka Message Queue
+  kafka:
+    image: ghcr.io/posthog/kafka-container:v2.8.2
+    restart: on-failure
+    environment:
+      KAFKA_BROKER_ID: 1001
+      KAFKA_CFG_RESERVED_BROKER_MAX_ID: 1001
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      ALLOW_PLAINTEXT_LISTENER: 'true'
+    healthcheck:
+      test: kafka-cluster.sh cluster-id --bootstrap-server localhost:9092 || exit 1
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+
+  # Zookeeper for Kafka
+  zookeeper:
+    image: zookeeper:3.7.0
+    restart: on-failure
+    ports:
+      - "2181:2181"
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    name: posthog_rust_services
