@@ -94,6 +94,11 @@ COPY --from=builder /app/property-defs-rs /app/property-defs-rs
 COPY --from=builder /app/bin /app/bin
 COPY --from=builder /app/Cargo.toml /app/Cargo.toml
 
+# Copy bin files to /usr/local/bin/ for easy access
+COPY --from=builder /app/bin/migrate-cyclotron /usr/local/bin/
+COPY --from=builder /app/bin/migrate /usr/local/bin/
+COPY --from=builder /app/bin/start-hoghooks /usr/local/bin/
+
 # Create entrypoint script for better service handling with migration support (as root)
 RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \
     echo 'echo "Starting PostHog Rust service: $BIN"' >> /usr/local/bin/entrypoint.sh && \
@@ -133,7 +138,7 @@ COPY --from=builder /app/target/release/$BIN /usr/local/bin/
 
 # Make sure posthog user can access everything
 RUN chown -R posthog:posthog /app && \
-    chmod +x /usr/local/bin/migrate-cyclotron /usr/local/bin/migrate /usr/local/bin/psql /usr/local/bin/sqlx
+    chmod +x /app/bin/* /usr/local/bin/migrate-cyclotron /usr/local/bin/migrate /usr/local/bin/start-hoghooks /usr/local/bin/psql /usr/local/bin/sqlx
 
 USER posthog
 
