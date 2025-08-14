@@ -89,7 +89,6 @@ COPY --from=builder /app/links /app/links
 COPY --from=builder /app/log-capture /app/log-capture
 COPY --from=builder /app/migrations /app/migrations
 COPY --from=builder /app/property-defs-rs /app/property-defs-rs
-COPY --from=builder /app/replay-capture /app/replay-capture
 
 # Copy utility scripts and essential root files
 COPY --from=builder /app/bin /app/bin
