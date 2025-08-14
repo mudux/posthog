@@ -72,10 +72,28 @@ WORKDIR /app
 COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/
 COPY --from=builder /usr/bin/psql /usr/local/bin/
 
-# Copy migration files and scripts
-COPY --from=builder /app/cyclotron-core/migrations /app/cyclotron-core/migrations
-COPY --from=builder /app/bin/migrate-cyclotron /usr/local/bin/
-COPY --from=builder /app/bin/migrate /usr/local/bin/
+# Copy entire application directories (excluding root-level developer files)
+COPY --from=builder /app/batch-import-worker /app/batch-import-worker
+COPY --from=builder /app/capture /app/capture
+COPY --from=builder /app/common /app/common
+COPY --from=builder /app/cyclotron-core /app/cyclotron-core
+COPY --from=builder /app/cyclotron-janitor /app/cyclotron-janitor
+COPY --from=builder /app/cyclotron-node /app/cyclotron-node
+COPY --from=builder /app/cymbal /app/cymbal
+COPY --from=builder /app/feature-flags /app/feature-flags
+COPY --from=builder /app/hook-api /app/hook-api
+COPY --from=builder /app/hook-common /app/hook-common
+COPY --from=builder /app/hook-janitor /app/hook-janitor
+COPY --from=builder /app/hook-worker /app/hook-worker
+COPY --from=builder /app/links /app/links
+COPY --from=builder /app/log-capture /app/log-capture
+COPY --from=builder /app/migrations /app/migrations
+COPY --from=builder /app/property-defs-rs /app/property-defs-rs
+COPY --from=builder /app/replay-capture /app/replay-capture
+
+# Copy utility scripts and essential root files
+COPY --from=builder /app/bin /app/bin
+COPY --from=builder /app/Cargo.toml /app/Cargo.toml
 
 # Create entrypoint script for better service handling with migration support (as root)
 RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \

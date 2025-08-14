@@ -7,6 +7,7 @@ on:
       - rust-services-*
     paths:
       - 'rust/**'
+      - 'livestream/**'
       - 'Dockerfile.multi-service'
       - '.github/workflows/rust-services-build.yml'
   pull_request:
@@ -14,11 +15,12 @@ on:
       - main
     paths:
       - 'rust/**'
+      - 'livestream/**'
       - 'Dockerfile.multi-service'
   workflow_dispatch:
     inputs:
       services_to_build:
-        description: 'Services to build (comma-separated: capture,replay-capture,property-defs-rs,cyclotron-janitor,all)'
+        description: 'Services to build (comma-separated: capture,replay-capture,property-defs-rs,cyclotron-janitor,livestream,all)'
         required: false
         default: 'all'
         type: string
@@ -65,7 +67,7 @@ jobs:
         id: setup-matrix
         run: |
           # Define all available services
-          ALL_SERVICES=("capture" "replay-capture" "property-defs-rs" "cyclotron-janitor")
+          ALL_SERVICES=("capture" "replay-capture" "property-defs-rs" "cyclotron-janitor" "livestream")
           
           # Determine which services to build
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -145,13 +147,22 @@ jobs:
           SERVICE="${{ matrix.service }}"
           VERSION="${{ needs.prepare-build-matrix.outputs.build_version }}"
           
-          # Determine binary name for build arg
+          # Determine binary name and context for build arg
           case "$SERVICE" in
             "replay-capture")
               BIN="capture"  # replay-capture uses same binary as capture
+              BUILD_CONTEXT="./rust"
+              DOCKERFILE="./rust/Dockerfile.multi-service"
+              ;;
+            "livestream")
+              BIN="livestream"  # livestream is a Go application
+              BUILD_CONTEXT="./livestream"
+              DOCKERFILE="./livestream/Dockerfile"
               ;;
             *)
               BIN="$SERVICE"
+              BUILD_CONTEXT="./rust"
+              DOCKERFILE="./rust/Dockerfile.multi-service"
               ;;
           esac
           
@@ -164,6 +175,8 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           echo "image_tag_latest=${IMAGE_TAG_LATEST}" >> $GITHUB_OUTPUT
+          echo "build_context=${BUILD_CONTEXT}" >> $GITHUB_OUTPUT
+          echo "dockerfile=${DOCKERFILE}" >> $GITHUB_OUTPUT
           echo "should_push=${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.push_to_ecr == 'true') }}" >> $GITHUB_OUTPUT
           
           echo "🏷️ Service: ${SERVICE}"
@@ -222,8 +235,8 @@ jobs:
       - name: 🏗️ Build ${{ matrix.service }} Service
         uses: docker/build-push-action@v5
         with:
-          context: ./rust
-          file: ./rust/Dockerfile.multi-service
+          context: ${{ steps.vars.outputs.build_context }}
+          file: ${{ steps.vars.outputs.dockerfile }}
           platforms: linux/amd64
           build-args: |
             BIN=${{ steps.vars.outputs.bin }}
@@ -234,10 +247,10 @@ jobs:
             ${{ steps.vars.outputs.image_tag_latest }}
           push: ${{ steps.vars.outputs.should_push }}
           cache-from: |
-            type=gha,scope=rust-${{ matrix.service }}
-            type=gha,scope=rust-base
+            type=gha,scope=${{ matrix.service == 'livestream' && 'go' || 'rust' }}-${{ matrix.service }}
+            type=gha,scope=${{ matrix.service == 'livestream' && 'go' || 'rust' }}-base
           cache-to: |
-            type=gha,mode=max,scope=rust-${{ matrix.service }}
+            type=gha,mode=max,scope=${{ matrix.service == 'livestream' && 'go' || 'rust' }}-${{ matrix.service }}
           outputs: type=registry,compression=gzip,compression-level=9
 
       - name: 📋 Generate Service Build Summary

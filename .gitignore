@@ -103,3 +103,6 @@ target/*
 
 # Ignore user's Cursor rules
 .cursor/**/user*.mdc
+
+# ignore .md files
+*.md

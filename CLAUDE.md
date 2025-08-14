@@ -14,6 +14,27 @@
   - Frontend: `cd frontend && pnpm build`
   - Start dev: `./bin/start`
 
+## PostHog Production Architecture (Kubernetes Deployment)
+
+### Event Processing Pipeline
+```
+Frontend/API → /e or /capture → Capture Service (Rust) → Kafka (events_plugin_ingestion) → Plugin Server (Node.js) → ClickHouse
+                                                                                                                      ↓
+API Queries → Web Service (Django) → Celery Tasks → Workers (Python) → Query ClickHouse → Results
+```
+
+### Key Services in Production
+- **`posthog-capture`**: Rust service receiving `/capture`, `/e`, `/batch` endpoints → Kafka `events_plugin_ingestion` topic
+- **`posthog-replay-capture`**: Rust service receiving `/s` endpoint → Kafka `session_recording_events` topic  
+- **`posthog-plugins-ingestion`**: Node.js plugin server (default mode) for Kafka→ClickHouse event processing
+- **`posthog-web-new`**: Django web application handling `/decide` and all UI/API endpoints
+- **`posthog-worker-new`**: Python Celery workers + RedBeat scheduler for background jobs
+- **Specialized Plugin Services**: CDP API, events processing, plugin workers
+
+### Development vs Production
+- **Development**: `./bin/start` runs all services together
+- **Production**: Split into separate containerized services for scalability
+
 ## Code Style
 - Python: Use type hints, follow mypy strict rules
 - Frontend: TypeScript required, explicit return types
